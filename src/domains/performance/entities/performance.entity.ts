@@ -1,15 +1,18 @@
-import { Entity, Column, PrimaryColumn } from 'typeorm';
+import { Entity, Column, PrimaryColumn, UpdateDateColumn } from 'typeorm';
 
 @Entity('performances')
 export class Performance {
   @PrimaryColumn()
-  id: string;
+  id: string; // 소스측 ID
+
+  @Column()
+  source: string; // 'KOPIS' | 'CULTURE'
+
+  @Column()
+  type: string; // 'THEATER', 'MUSICAL', 'EXHIBITION', 'FESTIVAL'
 
   @Column()
   title: string;
-
-  @Column()
-  genre: string;
 
   @Column({ type: 'date' })
   start_date: Date;
@@ -18,11 +21,23 @@ export class Performance {
   end_date: Date;
 
   @Column()
+  place_name: string;
+
+  @Column({ nullable: true })
+  poster_url: string;
+
+  @Column({ nullable: true })
+  genre: string;
+
+  @Column({ nullable: true })
   status: string;
 
   @Column({ type: 'text', nullable: true })
-  synopsis: string;
+  description: string;
 
-  @Column({ name: 'poster_url', nullable: true })
-  posterUrl: string;
+  @Column({ nullable: true })
+  ticket_link: string;
+
+  @UpdateDateColumn()
+  updated_at: Date;
 }
