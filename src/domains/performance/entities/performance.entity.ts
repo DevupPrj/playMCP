@@ -6,38 +6,41 @@ export class Performance {
   id: string; // 소스측 ID
 
   @Column()
-  source: string; // 'KOPIS' | 'CULTURE'
+  source: string; // 'KOPIS'
 
   @Column()
-  type: string; // 'THEATER', 'MUSICAL', 'EXHIBITION', 'FESTIVAL'
+  type: string; // 'THEATER', 'MUSICAL'
 
   @Column()
-  title: string;
+  title: string; // 공연 제목
 
   @Column({ type: 'date' })
-  start_date: Date;
+  start_date: Date; // 공연 시작일
 
   @Column({ type: 'date' })
-  end_date: Date;
+  end_date: Date; // 공연 종료일
+
+  @Column({ nullable: true })
+  time_info: string; // 공연 시간 안내 (예: "화~금 19:30 / 주말 15:00")
 
   @Column()
-  place_name: string;
+  place_name: string; // 장소명
 
   @Column({ nullable: true })
-  poster_url: string;
+  price: string; // 티켓 가격 정보
 
   @Column({ nullable: true })
-  genre: string;
+  poster_url: string; // 포스터 정보 URL
 
   @Column({ nullable: true })
-  status: string;
+  genre: string; // 상세 장르 (예: '드라마', '클래식')
+
+  @Column({ nullable: true })
+  status: string; // 공연 상태 ('공연중', '공연예정')
 
   @Column({ type: 'text', nullable: true })
-  description: string;
-
-  @Column({ nullable: true })
-  ticket_link: string;
+  description: string; // 줄거리 및 상세 내용
 
   @UpdateDateColumn()
-  updated_at: Date;
+  updated_at: Date; // 마지막 데이터 업데이트 시각
 }
