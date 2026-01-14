@@ -40,7 +40,7 @@ export class SearchTool {
     day_of_week?: string;
     region?: string;
     genre?: string;
-    status?: '공연중' | '공연예정'; // enum 값은 정확하게
+    status?: '공연중' | '공연예정';
     vibe_and_content?: string;
     price_info?: string;
   }) => {
