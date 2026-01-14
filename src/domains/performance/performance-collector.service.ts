@@ -8,13 +8,13 @@ import { firstValueFrom } from 'rxjs';
 import * as xml2js from 'xml2js';
 
 interface KopisItemRaw {
-  mt20id: string[]; // 공연 ID
-  prfnm: string[]; // 공연명
+  mt20id: string[]; // ID
+  prfnm: string[]; // 제목
   genrenm: string[]; // 장르
   prfpdfrom: string[]; // 시작일
   prfpdto: string[]; // 종료일
-  poster: string[]; // 포스터 URL
-  fcltynm: string[]; // 장소명
+  poster: string[]; // 포스터
+  fcltynm: string[]; // 장소
   openrun: string[]; // 오픈런 여부
 }
 
@@ -27,8 +27,9 @@ interface KopisDetailRaw {
   poster: string[];
   genrenm: string[];
   prfstate: string[];
-  sty?: string[]; // 줄거리
-  styurl?: string[]; // 소개 이미지
+  sty?: string[];
+  dtguidance?: string[];
+  pcseguidance?: string[];
 }
 
 interface KopisResponse<T> {
@@ -50,13 +51,12 @@ export class PerformanceCollectorService {
 
   async collectAll() {
     this.logger.log('데이터 수집 시작');
-    await this.collectFromKopis(); // KOPIS (연극, 뮤지컬)
-    // await this.collectFromCulture(); // 문화포털 (전시, 축제)
+    await this.collectFromKopis();
     this.logger.log('데이터 수집 완료');
   }
 
   // ----------------------------------------------------------------
-  //  KOPIS 수집 로직 (연극, 뮤지컬)
+  //  KOPIS 수집 로직 (전체 페이지 순회)
   // ----------------------------------------------------------------
   private async collectFromKopis() {
     const apiKey = this.configService.get<string>('KOPIS_API_KEY');
@@ -68,40 +68,61 @@ export class PerformanceCollectorService {
       .slice(0, 10)
       .replace(/-/g, '');
 
-    // 장르 코드: AAAA(연극), GGGA(뮤지컬)
-    const genreCodes = ['AAAA', 'GGGA'];
+    const genreCodes = ['AAAA', 'GGGA']; // 연극, 뮤지컬
 
     for (const genre of genreCodes) {
-      try {
-        const url = `http://www.kopis.or.kr/openApi/restful/pblprfr`;
-        const { data } = await firstValueFrom(
-          this.httpService.get<string>(url, {
-            params: {
-              service: apiKey,
-              stdate: today,
-              eddate: nextMonth,
-              cpage: 1,
-              rows: 50,
-              shcate: genre,
-            },
-          }),
-        );
+      let page = 1; // 1페이지부터 시작
+      let isGenreFinished = false;
 
-        const parsed = (await this.parseXml(
-          data,
-        )) as KopisResponse<KopisItemRaw>;
+      this.logger.log(`📚 [${genre}] 수집 시작...`);
 
-        const list = parsed?.dbs?.db || [];
+      while (!isGenreFinished) {
+        try {
+          const url = `http://www.kopis.or.kr/openApi/restful/pblprfr`;
+          const { data } = await firstValueFrom(
+            this.httpService.get<string>(url, {
+              params: {
+                service: apiKey,
+                stdate: today,
+                eddate: nextMonth,
+                cpage: page,
+                rows: 100,
+                shcate: genre,
+              },
+            }),
+          );
 
-        for (const item of list) {
-          if (item?.mt20id?.[0]) {
-            await this.saveKopisDetail(item.mt20id[0], apiKey, genre);
-            await this.sleep(100);
+          const parsed = (await this.parseXml(
+            data,
+          )) as KopisResponse<KopisItemRaw>;
+
+          const list = parsed?.dbs?.db || [];
+
+          if (list.length === 0) {
+            this.logger.log(`
+              📚 [${genre}] 모든 페이지 수집 완료 (총 ${page - 1}페이지)
+            `);
+            isGenreFinished = true;
+            break;
           }
+
+          for (const item of list) {
+            if (item?.mt20id?.[0]) {
+              await this.saveKopisDetail(item.mt20id[0], apiKey, genre);
+              await this.sleep(50); // 너무 빠르면 차단됨
+            }
+          }
+          page++;
+          await this.sleep(100);
+        } catch (e) {
+          const errorMessage = e instanceof Error ? e.message : 'Unknown Error';
+          this.logger.error(`
+            KOPIS 수집 중 에러 (Genre: ${genre}, Page: ${page}): ${errorMessage}
+          `);
+
+          isGenreFinished = true;
+          break;
         }
-      } catch (e) {
-        const errorMessage = e instanceof Error ? e.message : 'Unknown Error';
-        this.logger.error(`KOPIS 수집 실패 (${genre}): ${errorMessage}`);
       }
     }
   }
@@ -129,11 +150,13 @@ export class PerformanceCollectorService {
         ? new Date(info.prfpdfrom[0])
         : new Date(),
       end_date: info.prfpdto?.[0] ? new Date(info.prfpdto[0]) : new Date(),
-      place_name: info.fcltynm?.[0] || '정보 없음',
-      poster_url: info.poster?.[0] || '',
-      genre: info.genrenm?.[0] || '',
+      price: info.pcseguidance?.[0] || '가격 정보 없음',
+      time_info: info.dtguidance?.[0] || '시간 정보 없음',
+      place_name: info.fcltynm?.[0] || '장소 정보 없음',
+      poster_url: info.poster?.[0] || '포스터 정보 없음',
+      genre: info.genrenm?.[0] || '장르 정보 없음',
       status: info.prfstate?.[0] || '정보 없음',
-      description: info.sty?.[0] || '',
+      description: info.sty?.[0] || '시놉시스 없음',
       updated_at: new Date(),
     });
 
