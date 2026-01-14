@@ -71,7 +71,7 @@ export class PerformanceCollectorService {
     const genreCodes = ['AAAA', 'GGGA']; // 연극, 뮤지컬
 
     for (const genre of genreCodes) {
-      let page = 1; // 1페이지부터 시작
+      let page = 1;
       let isGenreFinished = false;
 
       this.logger.log(`📚 [${genre}] 수집 시작...`);
@@ -109,7 +109,7 @@ export class PerformanceCollectorService {
           for (const item of list) {
             if (item?.mt20id?.[0]) {
               await this.saveKopisDetail(item.mt20id[0], apiKey, genre);
-              await this.sleep(50); // 너무 빠르면 차단됨
+              await this.sleep(50);
             }
           }
           page++;
