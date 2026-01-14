@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -49,10 +50,24 @@ export class PerformanceCollectorService {
     private readonly performanceRepo: Repository<Performance>,
   ) {}
 
+  /**
+   * 크론 작업: 매일 새벽 3시에 공연 데이터 수집
+   * CronExpression.EVERY_DAY_AT_3AM = '0 3 * * *'
+   */
+  @Cron(CronExpression.EVERY_DAY_AT_3AM)
   async collectAll() {
-    this.logger.log('데이터 수집 시작');
+    this.logger.log('🕐 [크론] 데이터 수집 시작');
     await this.collectFromKopis();
-    this.logger.log('데이터 수집 완료');
+    this.logger.log('✅ [크론] 데이터 수집 완료');
+  }
+
+  /**
+   * 수동 실행용 메서드 (API 엔드포인트에서 호출 가능)
+   */
+  async collectAllManually() {
+    this.logger.log('📝 [수동] 데이터 수집 시작');
+    await this.collectFromKopis();
+    this.logger.log('✅ [수동] 데이터 수집 완료');
   }
 
   // ----------------------------------------------------------------

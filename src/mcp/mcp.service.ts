@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { PerformanceService } from '../domains/performance/performance.service';
+import { PerformanceService } from '../api/performance/performance.service';
 import { SearchTool } from './tools/search.tool';
 
 @Injectable()
