@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { z } from 'zod';
-import { PerformanceService } from '../../domains/performance/performance.service';
+import { PerformanceService } from '../../api/performance/performance.service';
 
 @Injectable()
 export class SearchTool {
@@ -70,7 +70,10 @@ export class SearchTool {
     if (!results || results.length === 0) {
       return {
         content: [
-          { type: 'text', text: '조건에 맞는 공연을 찾을 수 없습니다.' },
+          {
+            type: 'text' as const,
+            text: '조건에 맞는 공연을 찾을 수 없습니다.',
+          },
         ],
       };
     }
@@ -91,7 +94,9 @@ export class SearchTool {
       .join('\n');
 
     return {
-      content: [{ type: 'text', text: `검색 결과입니다:\n${responseText}` }],
+      content: [
+        { type: 'text' as const, text: `검색 결과입니다:\n${responseText}` },
+      ],
     };
   };
 }

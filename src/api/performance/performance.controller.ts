@@ -7,7 +7,7 @@ export class PerformancesController {
 
   @Post('collect')
   async triggerCollection() {
-    await this.collectorService.collectAll();
+    await this.collectorService.collectAllManually();
     return { message: '데이터 수집이 시작되었습니다. 로그를 확인하세요.' };
   }
 }
