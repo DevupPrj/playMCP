@@ -26,6 +26,12 @@ export class Performance {
   @Column()
   place_name: string; // 장소명
 
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  latitude: number; // 위도
+
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  longitude: number; // 경도
+
   @Column({ nullable: true })
   price: string; // 티켓 가격 정보
 

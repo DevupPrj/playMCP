@@ -30,6 +30,7 @@ services:
       DB_PASSWORD: 1234
       DB_DATABASE: playmcp
       PORT: 3000
+      KAKAO_LOCAL_API: ${KAKAO_LOCAL_API}
     env_file:
       - .env
     depends_on:
