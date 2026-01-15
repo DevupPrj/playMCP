@@ -20,17 +20,39 @@ import { RagModule } from './lib/rag/rag.module';
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        type: 'postgres',
-        host: configService.get<string>('DB_HOST'),
-        port: configService.get<number>('DB_PORT'),
-        username: configService.get<string>('DB_USERNAME'),
-        password: configService.get<string>('DB_PASSWORD'),
-        database: configService.get<string>('DB_DATABASE'),
-        entities: [__dirname + '/**/*.entity{.ts,.js}'],
-        synchronize: true,
-        logging: true,
-      }),
+      useFactory: (configService: ConfigService) => {
+        const host = configService.get<string>('DB_HOST');
+        const portStr = configService.get<string>('DB_PORT') || '5432';
+        const port = parseInt(portStr, 10) || 5432;
+        const username = configService.get<string>('DB_USERNAME');
+        const password = configService.get<string>('DB_PASSWORD');
+        const database = configService.get<string>('DB_DATABASE');
+
+        // 디버깅용: 모든 값을 출력
+        console.error('📊 DB Config:', {
+          host,
+          port,
+          username,
+          password: password
+            ? `***${password.length}자*** (${password})`
+            : '❌ 없음',
+          database,
+        });
+
+        const dbConfig = {
+          type: 'postgres' as const,
+          host,
+          port,
+          username,
+          password,
+          database,
+          entities: [__dirname + '/**/*.entity{.ts,.js}'],
+          synchronize: true,
+          logging: true,
+        };
+
+        return dbConfig;
+      },
     }),
 
     McpModule,
