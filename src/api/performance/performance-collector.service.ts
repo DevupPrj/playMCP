@@ -156,8 +156,13 @@ export class PerformanceCollectorService {
 
     if (!info) return;
 
-    const entity = this.performanceRepo.create({
-      id: info.mt20id?.[0],
+    const placeName = info.fcltynm?.[0] || '장소 정보 없음';
+
+    // 카카오 로컬 API로 위도/경도 가져오기
+    const coordinates = await this.getCoordinatesFromKakaoLocal(placeName);
+
+    const performanceId = info.mt20id?.[0];
+    const newData = {
       source: 'KOPIS',
       type: genreCode === 'AAAA' ? 'THEATER' : 'MUSICAL',
       title: info.prfnm?.[0] || '제목 없음',
@@ -167,16 +172,250 @@ export class PerformanceCollectorService {
       end_date: info.prfpdto?.[0] ? new Date(info.prfpdto[0]) : new Date(),
       price: info.pcseguidance?.[0] || '가격 정보 없음',
       time_info: info.dtguidance?.[0] || '시간 정보 없음',
-      place_name: info.fcltynm?.[0] || '장소 정보 없음',
+      place_name: placeName,
+      latitude: coordinates?.latitude,
+      longitude: coordinates?.longitude,
       poster_url: info.poster?.[0] || '포스터 정보 없음',
       genre: info.genrenm?.[0] || '장르 정보 없음',
       status: info.prfstate?.[0] || '정보 없음',
       description: info.sty?.[0] || '시놉시스 없음',
-      updated_at: new Date(),
+    };
+
+    // 기존 데이터 확인
+    const existing = await this.performanceRepo.findOne({
+      where: { id: performanceId },
     });
 
-    await this.performanceRepo.save(entity);
-    this.logger.log(`[KOPIS] 저장됨: ${entity.title}`);
+    if (existing) {
+      // 값 비교 (updated_at 제외)
+      const hasChanges =
+        existing.source !== newData.source ||
+        existing.type !== newData.type ||
+        existing.title !== newData.title ||
+        existing.start_date.getTime() !== newData.start_date.getTime() ||
+        existing.end_date.getTime() !== newData.end_date.getTime() ||
+        existing.price !== newData.price ||
+        existing.time_info !== newData.time_info ||
+        existing.place_name !== newData.place_name ||
+        existing.poster_url !== newData.poster_url ||
+        existing.genre !== newData.genre ||
+        existing.status !== newData.status ||
+        existing.description !== newData.description ||
+        (existing.latitude !== null &&
+          newData.latitude !== null &&
+          parseFloat(existing.latitude.toString()) !== newData.latitude) ||
+        (existing.longitude !== null &&
+          newData.longitude !== null &&
+          parseFloat(existing.longitude.toString()) !== newData.longitude) ||
+        (existing.latitude === null && newData.latitude !== null) ||
+        (existing.longitude === null && newData.longitude !== null);
+
+      if (!hasChanges) {
+        this.logger.log(`[KOPIS] 변경사항 없음 (건너뜀): ${newData.title}`);
+        return;
+      }
+
+      // 변경된 필드만 업데이트
+      await this.performanceRepo.update(performanceId, {
+        ...newData,
+        updated_at: new Date(),
+      });
+      this.logger.log(
+        `[KOPIS] 업데이트됨: ${newData.title}${coordinates ? ` (위도: ${coordinates.latitude}, 경도: ${coordinates.longitude})` : ''}`,
+      );
+    } else {
+      // 새 데이터 생성
+      const entity = this.performanceRepo.create({
+        id: performanceId,
+        ...newData,
+        updated_at: new Date(),
+      });
+      await this.performanceRepo.save(entity);
+      this.logger.log(
+        `[KOPIS] 저장됨: ${newData.title}${coordinates ? ` (위도: ${coordinates.latitude}, 경도: ${coordinates.longitude})` : ''}`,
+      );
+    }
+  }
+
+  /**
+   * 카카오 로컬 API를 사용하여 주소를 위도/경도로 변환
+   */
+  private async getCoordinatesFromKakaoLocal(
+    address: string,
+  ): Promise<{ latitude: number; longitude: number } | null> {
+    const apiKey = this.configService.get<string>('KAKAO_LOCAL_API');
+
+    if (!apiKey) {
+      this.logger.warn('카카오 로컬 API Key 없음 - 위도/경도 변환 건너뜀');
+      return null;
+    }
+
+    try {
+      // 주소 정제: 중복 제거, 공백 정리, 괄호 처리
+      let cleanedAddress = address.trim();
+
+      // 1. 중복된 괄호/대괄호 내용 제거
+      cleanedAddress = cleanedAddress.replace(/\(([^)]+)\)\s*\(\1\)/g, '($1)');
+      cleanedAddress = cleanedAddress.replace(/\[([^\]]+)\]\s*\[\1\]/g, '[$1]');
+
+      // 2. 전체 중복 패턴 제거: "롯데시네마 [서울 구로] (롯데시네마 [서울 구로])" → "롯데시네마 [서울 구로]"
+      const parts = cleanedAddress.split(/\s*\(\s*/);
+      if (parts.length > 1) {
+        const mainPart = parts[0].trim();
+        const bracketPart = parts[1]?.replace(/\)/g, '').trim();
+        if (
+          mainPart === bracketPart ||
+          mainPart.includes(bracketPart) ||
+          bracketPart?.includes(mainPart)
+        ) {
+          cleanedAddress = mainPart;
+        }
+      }
+
+      // 3. 불필요한 공백 제거
+      cleanedAddress = cleanedAddress.replace(/\s+/g, ' ').trim();
+
+      // 4. 괄호/대괄호 앞뒤 공백 정리
+      cleanedAddress = cleanedAddress
+        .replace(/\s*\(\s*/g, '(')
+        .replace(/\s*\)\s*/g, ')')
+        .replace(/\s*\[\s*/g, '[')
+        .replace(/\s*\]\s*/g, ']');
+
+      // 여러 쿼리 시도 (우선순위: 대괄호 포함 > 대괄호 제거)
+      // 대괄호는 지역 정보일 수 있으므로 포함 버전을 우선 시도
+      const queries = [
+        cleanedAddress, // 1순위: 정제된 원본 (대괄호 포함)
+        cleanedAddress.replace(/\[|\]/g, ''), // 2순위: 대괄호 제거 (낮은 우선순위)
+        cleanedAddress.replace(/\([^)]*\)/g, '').trim(), // 3순위: 소괄호 제거
+      ];
+
+      // 4순위: 소괄호 내용만 검색
+      const bracketMatches = cleanedAddress.match(/\(([^)]+)\)/g);
+      if (bracketMatches && bracketMatches.length > 0) {
+        for (const match of bracketMatches) {
+          const content = match.replace(/[()]/g, '').trim(); // 괄호 제거
+          if (content.length > 0) {
+            queries.push(content); // 소괄호 안의 내용만 검색
+          }
+        }
+      }
+
+      // 5순위부터: 띄어쓰기 단위로 개별 검색
+      const words = cleanedAddress
+        .split(/\s+/)
+        .filter((word) => word.trim().length > 0);
+      for (const word of words) {
+        queries.push(word.trim()); // 5순위, 6순위, ... 각 단어별로 검색
+      }
+
+      this.logger.log(
+        `[카카오 로컬] 원본 주소: "${address}" → 정제된 주소: "${cleanedAddress}"`,
+      );
+      this.logger.log(
+        `[카카오 로컬] 시도할 쿼리 목록 (${queries.length}개): ${queries.map((q, i) => `${i + 1}. "${q}"`).join(', ')}`,
+      );
+
+      const url = 'https://dapi.kakao.com/v2/local/search/keyword.json';
+
+      // 첫 번째로 결과가 나오는 쿼리 사용
+      for (let i = 0; i < queries.length; i++) {
+        const query = queries[i];
+        if (!query || query.trim().length === 0) {
+          this.logger.log(`[카카오 로컬] 쿼리 ${i + 1}번 스킵 (빈 문자열)`);
+          continue;
+        }
+
+        this.logger.log(
+          `[카카오 로컬] 쿼리 시도 ${i + 1}/${queries.length}: "${query}"`,
+        );
+
+        try {
+          const { data } = await firstValueFrom(
+            this.httpService.get<{
+              meta?: {
+                total_count?: number;
+              };
+              documents?: Array<{
+                x?: string; // 경도
+                y?: string; // 위도
+                place_name?: string;
+              }>;
+            }>(url, {
+              params: {
+                query: query,
+                size: 1, // 첫 번째 결과만 필요
+              },
+              headers: {
+                Authorization: `KakaoAK ${apiKey}`,
+              },
+            }),
+          );
+
+          const place = data?.documents?.[0];
+          this.logger.log(
+            `[카카오 로컬] 응답 - total_count: ${data?.meta?.total_count || 0}, documents: ${data?.documents?.length || 0}`,
+          );
+
+          if (place?.x && place?.y) {
+            this.logger.log(
+              `[카카오 로컬] ✅ 주소 찾음: "${query}" → 위도: ${place.y}, 경도: ${place.x} (장소명: ${place.place_name})`,
+            );
+            return {
+              latitude: parseFloat(place.y),
+              longitude: parseFloat(place.x),
+            };
+          }
+
+          // 결과가 없으면 다음 쿼리 시도
+          if (
+            data?.meta?.total_count === 0 ||
+            !data?.documents ||
+            data.documents.length === 0
+          ) {
+            this.logger.log(
+              `[카카오 로컬] ⚠️ 결과 없음 (total_count: ${data?.meta?.total_count || 0}) - 다음 쿼리 시도`,
+            );
+            continue;
+          }
+        } catch (apiError: unknown) {
+          // 403 에러 상세 로깅
+          if (
+            apiError &&
+            typeof apiError === 'object' &&
+            'response' in apiError
+          ) {
+            const httpError = apiError as {
+              response?: { status?: number; data?: unknown };
+            };
+            if (httpError.response?.status === 403) {
+              this.logger.error(
+                `[카카오 로컬] ❌ 403 인증 오류 - 카카오 로컬 API 인증 실패`,
+              );
+              this.logger.error(
+                `[카카오 로컬] 응답 상세: ${JSON.stringify(httpError.response?.data || {})}`,
+              );
+              // 인증 오류면 더 이상 시도하지 않음
+              throw apiError;
+            }
+          }
+          // 다른 에러는 상위 catch로 전달
+          throw apiError;
+        }
+      }
+
+      this.logger.warn(
+        `[카카오 로컬] ❌ 모든 쿼리 시도 실패 - 주소를 찾을 수 없음: "${address}" (정제된 주소: "${cleanedAddress}")`,
+      );
+      return null;
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown Error';
+      this.logger.error(
+        `[카카오 로컬] 위도/경도 변환 실패 (${address}): ${errorMessage}`,
+      );
+      return null;
+    }
   }
 
   // ----------------------------------------------------------------

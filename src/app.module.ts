@@ -28,14 +28,12 @@ import { RagModule } from './lib/rag/rag.module';
         const password = configService.get<string>('DB_PASSWORD');
         const database = configService.get<string>('DB_DATABASE');
 
-        // 디버깅용: 모든 값을 출력
+        // DB 연결 정보 확인 (비밀번호는 출력하지 않음)
         console.error('📊 DB Config:', {
           host,
           port,
           username,
-          password: password
-            ? `***${password.length}자*** (${password})`
-            : '❌ 없음',
+          password: password ? `***${password.length}자***` : '❌ 없음',
           database,
         });
 
