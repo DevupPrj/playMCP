@@ -7,6 +7,8 @@ import { Repository } from 'typeorm';
 import { Performance } from './entities/performance.entity';
 import { firstValueFrom } from 'rxjs';
 import * as xml2js from 'xml2js';
+import * as cheerio from 'cheerio';
+import { type } from 'os';
 
 interface KopisItemRaw {
   mt20id: string[]; // ID
@@ -19,18 +21,25 @@ interface KopisItemRaw {
   openrun: string[]; // 오픈런 여부
 }
 
-interface KopisDetailRaw {
-  mt20id: string[];
-  prfnm: string[];
-  prfpdfrom: string[];
-  prfpdto: string[];
-  fcltynm: string[];
-  poster: string[];
-  genrenm: string[];
-  prfstate: string[];
-  sty?: string[];
-  dtguidance?: string[];
-  pcseguidance?: string[];
+export interface KopisDetailRaw {
+  mt20id: string[]; // 공연 ID
+  prfnm: string[]; // 공연명
+  prfpdfrom: string[]; // 시작일
+  prfpdto: string[]; // 종료일
+  fcltynm: string[]; // 장소명
+  prfcast?: string[]; // 출연진
+  pcseguidance?: string[]; // 가격
+  poster?: string[]; // 포스터 URL
+  sty?: string[]; // 📜 줄거리 (비어있을 수 있음!)
+  genrenm?: string[]; // 장르
+  prfstate?: string[]; // 공연 상태
+  dtguidance?: string[]; // 공연 시간
+  relates?: {
+    relate?: {
+      relatenm: string[];
+      relateurl: string[];
+    }[];
+  }[];
 }
 
 interface KopisResponse<T> {
@@ -148,24 +157,59 @@ export class PerformanceCollectorService {
     genreCode: string,
   ) {
     const url = `http://www.kopis.or.kr/openApi/restful/pblprfr/${mt20id}`;
+
+    // 1. KOPIS 상세 API 호출
     const { data } = await firstValueFrom(
       this.httpService.get<string>(url, { params: { service: apiKey } }),
     );
+
+    // 2. XML -> JSON 파싱 (위에서 정의한 인터페이스 사용)
     const parsed = (await this.parseXml(data)) as KopisResponse<KopisDetailRaw>;
     const info = parsed?.dbs?.db?.[0];
 
     if (!info) return;
 
+    const rawTitle = info.prfnm?.[0] || '제목 없음';
+    const cleanTitle = rawTitle
+      .replace(/\[.*?\]/g, '')
+      .replace(/\(.*?\)/g, '')
+      .trim();
+    const title = cleanTitle;
+
     const placeName = info.fcltynm?.[0] || '장소 정보 없음';
 
-    // 카카오 로컬 API로 위도/경도 가져오기
+    let description = info.sty?.[0]?.trim();
+    const isDescriptionEmpty = !description || description.length < 5;
+
+    const type = genreCode === 'AAAA' ? 'THEATER' : 'MUSICAL';
+
+    if (isDescriptionEmpty) {
+      this.logger.log(`🔍 [${title}] 줄거리 없음 -> 네이버 통합 검색 시도...`);
+      const searchedDescription = await this.searchDescriptionOnNaver(
+        title,
+        type,
+      );
+
+      if (searchedDescription) {
+        description = searchedDescription;
+        this.logger.log(
+          `[${title}] 줄거리 보강 완료 (${description.length}자)`,
+        );
+      } else {
+        description = 'No contents';
+        this.logger.warn(`[${title}] 줄거리 검색 실패`);
+      }
+    }
+
+    // 📍 [좌표] 카카오 로컬 API
     const coordinates = await this.getCoordinatesFromKakaoLocal(placeName);
 
-    const performanceId = info.mt20id?.[0];
+    const ticketLink = info.relates?.[0]?.relate?.[0]?.relateurl?.[0] || null;
+
     const newData = {
       source: 'KOPIS',
-      type: genreCode === 'AAAA' ? 'THEATER' : 'MUSICAL',
-      title: info.prfnm?.[0] || '제목 없음',
+      type: type,
+      title: title,
       start_date: info.prfpdfrom?.[0]
         ? new Date(info.prfpdfrom[0])
         : new Date(),
@@ -173,27 +217,28 @@ export class PerformanceCollectorService {
       price: info.pcseguidance?.[0] || '가격 정보 없음',
       time_info: info.dtguidance?.[0] || '시간 정보 없음',
       place_name: placeName,
-      latitude: coordinates?.latitude,
-      longitude: coordinates?.longitude,
+      latitude: coordinates?.latitude || undefined,
+      longitude: coordinates?.longitude || undefined,
       poster_url: info.poster?.[0] || '포스터 정보 없음',
       genre: info.genrenm?.[0] || '장르 정보 없음',
       status: info.prfstate?.[0] || '정보 없음',
-      description: info.sty?.[0] || '시놉시스 없음',
+      description: description,
+      ticket_link: ticketLink || undefined,
     };
 
-    // 기존 데이터 확인
+    // --- 👇 기존 데이터 비교 및 저장 로직 ---
     const existing = await this.performanceRepo.findOne({
-      where: { id: performanceId },
+      where: { id: info.mt20id?.[0] },
     });
 
     if (existing) {
-      // 값 비교 (updated_at 제외)
       const hasChanges =
         existing.source !== newData.source ||
         existing.type !== newData.type ||
         existing.title !== newData.title ||
-        existing.start_date.getTime() !== newData.start_date.getTime() ||
-        existing.end_date.getTime() !== newData.end_date.getTime() ||
+        new Date(existing.start_date).getTime() !==
+          newData.start_date.getTime() ||
+        new Date(existing.end_date).getTime() !== newData.end_date.getTime() ||
         existing.price !== newData.price ||
         existing.time_info !== newData.time_info ||
         existing.place_name !== newData.place_name ||
@@ -201,45 +246,92 @@ export class PerformanceCollectorService {
         existing.genre !== newData.genre ||
         existing.status !== newData.status ||
         existing.description !== newData.description ||
-        (existing.latitude !== null &&
-          newData.latitude !== null &&
-          parseFloat(existing.latitude.toString()) !== newData.latitude) ||
-        (existing.longitude !== null &&
-          newData.longitude !== null &&
-          parseFloat(existing.longitude.toString()) !== newData.longitude) ||
-        (existing.latitude === null && newData.latitude !== null) ||
-        (existing.longitude === null && newData.longitude !== null);
-
+        existing.ticket_link !== newData.ticket_link;
       if (!hasChanges) {
-        this.logger.log(`[KOPIS] 변경사항 없음 (건너뜀): ${newData.title}`);
         return;
       }
 
-      // 변경된 필드만 업데이트
-      await this.performanceRepo.update(performanceId, {
+      await this.performanceRepo.update(info.mt20id[0], {
         ...newData,
         updated_at: new Date(),
       });
-      this.logger.log(
-        `[KOPIS] 업데이트됨: ${newData.title}${coordinates ? ` (위도: ${coordinates.latitude}, 경도: ${coordinates.longitude})` : ''}`,
-      );
+      this.logger.log(`♻️ [Update] ${newData.title}`);
     } else {
-      // 새 데이터 생성
       const entity = this.performanceRepo.create({
-        id: performanceId,
+        id: info.mt20id[0],
         ...newData,
         updated_at: new Date(),
       });
       await this.performanceRepo.save(entity);
-      this.logger.log(
-        `[KOPIS] 저장됨: ${newData.title}${coordinates ? ` (위도: ${coordinates.latitude}, 경도: ${coordinates.longitude})` : ''}`,
-      );
+      this.logger.log(`✨ [New] ${newData.title}`);
     }
   }
 
-  /**
-   * 카카오 로컬 API를 사용하여 주소를 위도/경도로 변환
-   */
+  // 10 단위로 KOPIS 샘플 수집
+  public async collectSampleFromKopis(limit: number): Promise<number> {
+    const apiKey = this.configService.get<string>('KOPIS_API_KEY');
+    if (!apiKey) {
+      this.logger.warn('KOPIS API Key 없음');
+      return 0;
+    }
+
+    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const nextMonth = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 10)
+      .replace(/-/g, '');
+
+    const genreCodes = ['AAAA', 'GGGA']; // 연극, 뮤지컬
+    const limitPerGenre = Math.ceil(limit / genreCodes.length); // 장르별 할당량 (10개면 5개씩)
+    let totalCollected = 0;
+
+    this.logger.log(`🧪 샘플 수집 시작 (총 목표: ${limit}개)`);
+
+    for (const genre of genreCodes) {
+      let currentGenreCount = 0;
+
+      try {
+        const url = `http://www.kopis.or.kr/openApi/restful/pblprfr`;
+        const { data } = await firstValueFrom(
+          this.httpService.get<string>(url, {
+            params: {
+              service: apiKey,
+              stdate: today,
+              eddate: nextMonth,
+              cpage: 1,
+              rows: limitPerGenre,
+              shcate: genre,
+            },
+          }),
+        );
+
+        const parsed = (await this.parseXml(
+          data,
+        )) as KopisResponse<KopisItemRaw>;
+        const list = parsed?.dbs?.db || [];
+
+        this.logger.log(`📚 [${genre}] 목록 ${list.length}개 확보. 상세 수집 시작...`);
+
+        for (const item of list) {
+          if (item?.mt20id?.[0]) {
+            // 상세 정보 수집 및 저장 (기존 메서드 재사용)
+            await this.saveKopisDetail(item.mt20id[0], apiKey, genre);
+            currentGenreCount++;
+            totalCollected++;
+            // 너무 빠르면 차단될 수 있으니 살짝 텀 두기
+            await this.sleep(100);
+          }
+        }
+      } catch (e) {
+        this.logger.error(`샘플 수집 실패 (${genre}): ${e}`);
+      }
+    }
+
+    this.logger.log(`🧪 샘플 수집 완료. 총 ${totalCollected}개 저장됨.`);
+    return totalCollected;
+  }
+
+  // 카카오 로컬 API를 사용하여 주소를 위도/경도로 변환하는 로직.
   private async getCoordinatesFromKakaoLocal(
     address: string,
   ): Promise<{ latitude: number; longitude: number } | null> {
@@ -418,6 +510,230 @@ export class PerformanceCollectorService {
     }
   }
 
+  // 네이버 API 호출을 이용해서 공연의 줄거리를 찾는 통합 로직.
+  public async searchDescriptionOnNaver(
+    title: string,
+    type: string,
+  ): Promise<string> {
+    const clientId = this.configService.get<string>('NAVER_CLIENT_ID');
+    const clientSecret = this.configService.get<string>('NAVER_CLIENT_SECRET');
+
+    if (!clientId || !clientSecret) return '';
+
+    // 검색어에서 [뮤지컬], (연극) 같은 괄호 제거
+    const cleanTitle = title.replace(/[\[\(].*?[\]\)]/g, '').trim();
+    const genrePrefix = type === 'THEATER' ? '연극' : '뮤지컬';
+
+    const searchKeyword = `${genrePrefix} ${cleanTitle}`;
+
+    // [1] 지식백과 검색
+    try {
+      const encycResult = await this.callNaverApi(
+        'encyc',
+        searchKeyword,
+        clientId,
+        clientSecret,
+      );
+      if (encycResult && this.isTitleMatched(cleanTitle, encycResult.title)) {
+        this.logger.log(`지식백과 적중: ${encycResult.title}`);
+        return encycResult.description;
+      }
+    } catch (e) {
+      this.logger.warn(`지식백과 검색 패스: ${e}`);
+    }
+
+    // [2] 뉴스 검색
+    try {
+      const newsData = await this.findBestNewsSnippet(searchKeyword);
+
+      if (newsData) {
+        this.logger.log(
+          `뉴스 스니펫 적중: ${newsData.result.substring(0, 30)}...`,
+        );
+        return newsData.result;
+      }
+    } catch (e) {
+      this.logger.warn(`뉴스 검색 패스: ${e}`);
+    }
+
+    // [3] 블로그 검색
+    try {
+      const blogQuery = `"${searchKeyword}" 줄거리 -후기 -리뷰`;
+      const blogResult = await this.callNaverApi(
+        'blog',
+        blogQuery,
+        clientId,
+        clientSecret,
+      );
+      // 블로그는 추가적으로 제목 검증 필수
+      if (blogResult && this.isTitleMatched(cleanTitle, blogResult.title)) {
+        this.logger.log(`블로그 적중: ${blogResult.title}`);
+        return this.cleanHtml(blogResult.description);
+      }
+    } catch (e) {
+      this.logger.warn(`블로그 검색 패스: ${e}`);
+    }
+
+    return '';
+  }
+
+  // 네이버 API 호출 로직
+  private async callNaverApi(
+    type: 'blog' | 'encyc',
+    query: string,
+    id: string,
+    secret: string,
+  ): Promise<{ title: string; description: string } | null> {
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.get(
+          `https://openapi.naver.com/v1/search/${type}.json`,
+          {
+            headers: {
+              'X-Naver-Client-Id': id,
+              'X-Naver-Client-Secret': secret,
+            },
+            params: {
+              query: query,
+              display: 1,
+              sort: 'sim',
+            },
+          },
+        ),
+      );
+
+      if (data.items && data.items.length > 0) {
+        const item = data.items[0];
+        return {
+          title: this.cleanHtml(item.title),
+          description: this.cleanHtml(item.description),
+        };
+      }
+    } catch (e) {
+      return null;
+    }
+    return null;
+  }
+
+  // KOPIS API 응답 객체 검증용 서비스 로직
+  public async getRawKopisDetail(mt20id: string) {
+    const apiKey = this.configService.get<string>('KOPIS_API_KEY');
+    const url = `http://www.kopis.or.kr/openApi/restful/pblprfr/${mt20id}`;
+
+    // 1. KOPIS 호출
+    const { data } = await firstValueFrom(
+      this.httpService.get(url, { params: { service: apiKey } })
+    );
+
+    // 2. XML -> JSON 변환
+    const parser = new xml2js.Parser();
+    const result = await parser.parseStringPromise(data);
+
+    // 3. 변환된 Raw Data 리턴
+    // (보통 result.dbs.db[0] 안에 내용이 다 들어있습니다)
+    return result;
+  }
+
+  // 네이버 뉴스 api를 호출하고 시놉시스 문자열을 선택하는 로직
+  public async findBestNewsSnippet(
+    keyword: string,
+  ): Promise<{ type: string; source: string; result: string } | null> {
+    const query = `"${keyword}" (줄거리 | 시놉시스 | 내용)`;
+    const { data } = await firstValueFrom(
+      this.httpService.get('https://openapi.naver.com/v1/search/news.json', {
+        headers: {
+          'X-Naver-Client-Id':
+            this.configService.get<string>('NAVER_CLIENT_ID'),
+          'X-Naver-Client-Secret': this.configService.get<string>(
+            'NAVER_CLIENT_SECRET',
+          ),
+        },
+        params: {
+          query: query,
+          display: 10,
+          sort: 'sim',
+        },
+      }),
+    );
+
+    if (!data.items || data.items.length === 0) return null;
+
+    const bestItem = this.selectBestItem(data.items);
+    if (bestItem) {
+      return {
+        type: 'NAVER_API_SNIPPET',
+        source: this.cleanHtml(bestItem.title),
+        result: this.cleanHtml(bestItem.description),
+      };
+    }
+
+    return null;
+  }
+
+  // 여러 개의 뉴스 중 가장 좋은 요약 내용을 선택하는 로직
+  private selectBestItem(items: any[]): any {
+    const candidates = items.map(item => {
+      let score = 0;
+      const text = this.cleanHtml(item.description);
+      const title = this.cleanHtml(item.title);
+
+      // 블랙리스트
+      const spamKeywords = ['랭키파이', '트렌드', '순위', '할인', '티켓오픈', '캐스팅', '독후감', '발매'];
+      if (spamKeywords.some(k => text.includes(k) || title.includes(k))) {
+        score -= 100;
+      }
+
+      // 화이트리스트
+      const plotKeywords = ['줄거리', '시놉시스', '내용은', '사건', '배경', '그린', '다룬', '이야기'];
+      plotKeywords.forEach(k => {
+        if (text.includes(k)) score += 10;
+      });
+
+      // 서술형이면 가점
+      if (text.match(/다\./)) score += 20;
+
+      // 너무 짧으면 정보량 부족
+      if (text.length < 30) score -= 20;
+
+      return { item, score };
+    });
+
+    // 점수 높은 순 정렬
+    candidates.sort((a, b) => b.score - a.score);
+
+    // 1등의 점수가 0점보다는 높아야 의미가 있음
+    return candidates[0].score > 0 ? candidates[0].item : null;
+  }
+
+  // Meta Description 크롤링 서비스 로직
+  public async fetchMetaDescription(url: string): Promise<string> {
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.get(url, {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+          },
+          timeout: 3000,
+        }),
+      );
+
+      // 2. Cheerio 파싱
+      const $ = cheerio.load(data);
+
+      // 3. 메타 태그 찾기
+      let metaDesc = $('meta[property="og:description"]').attr('content') ||
+                     $('meta[name="description"]').attr('content') ||
+                     $('meta[name="twitter:description"]').attr('content');
+
+      if (!metaDesc) return '❌ 메타 태그 없음';
+
+      return metaDesc.trim();
+    } catch (e) {
+      return `에러 발생: ${e}`;
+    }
+  }
+
   // ----------------------------------------------------------------
   //  문화포털 수집 로직 (전시, 축제)
   // ----------------------------------------------------------------
@@ -475,5 +791,23 @@ export class PerformanceCollectorService {
 
   private sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private cleanHtml(text: string): string {
+    if (!text) return '';
+    return text
+      .replace(/<[^>]*>?/gm, '') // HTML 태그 제거
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .trim();
+  }
+
+  private isTitleMatched(query: string, resultTitle: string): boolean {
+    if (!query || !resultTitle) return false;
+    const normalize = (s: string) => s.replace(/[\s\[\]\(\)\-\.]/g, '').toLowerCase();
+    return normalize(resultTitle).includes(normalize(query));
   }
 }

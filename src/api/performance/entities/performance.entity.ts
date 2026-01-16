@@ -47,6 +47,9 @@ export class Performance {
   @Column({ type: 'text', nullable: true })
   description: string; // 줄거리 및 상세 내용
 
+  @Column({ type: 'text', nullable: true })
+  ticket_link: string; // 티켓링크
+
   @UpdateDateColumn()
   updated_at: Date; // 마지막 데이터 업데이트 시각
 }
