@@ -8,6 +8,10 @@ import { Performance } from '../../api/performance/entities/performance.entity';
 @Module({
   imports: [TypeOrmModule.forFeature([Performance])],
   providers: [RagService, EmbeddingService, VectorStoreService],
-  exports: [RagService], // 다른 모듈에서 사용 가능하도록 export
+  exports: [
+    RagService, // 통합 서비스 (임베딩 + 검색)
+    EmbeddingService, // 임베딩 생성만 (독립 사용 가능)
+    VectorStoreService, // 벡터 검색만 (독립 사용 가능)
+  ],
 })
 export class RagModule {}

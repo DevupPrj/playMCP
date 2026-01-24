@@ -8,6 +8,7 @@ import { AppService } from './app.service';
 import { McpModule } from './mcp/mcp.module';
 import { PerformanceModule } from './api/performance/performance.module';
 import { RagModule } from './lib/rag/rag.module';
+import { DatabaseInitService } from './database/database-init.service';
 
 @Module({
   imports: [
@@ -58,6 +59,6 @@ import { RagModule } from './lib/rag/rag.module';
     RagModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, DatabaseInitService],
 })
 export class AppModule {}
