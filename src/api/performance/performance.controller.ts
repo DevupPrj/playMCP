@@ -3,7 +3,9 @@ import { PerformanceCollectorService } from './performance-collector.service';
 
 @Controller('performances')
 export class PerformancesController {
-  constructor(private readonly collectorService: PerformanceCollectorService) {}
+  constructor(
+    private readonly collectorService: PerformanceCollectorService,
+  ) {}
 
   @Post('collect')
   async triggerCollection() {
@@ -82,4 +84,5 @@ export class PerformancesController {
       length: data.result.length,
     };
   }
+
 }

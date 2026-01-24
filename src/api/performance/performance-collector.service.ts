@@ -10,6 +10,7 @@ import { NaverCollector } from './collectors/naver.collector';
 import { KakaoCollector } from './collectors/kakao.collector';
 import { SleepUtil } from './collectors/utils/sleep.util';
 import { CrawlerUtil } from './collectors/utils/crawler.util';
+import { EmbeddingService } from 'src/lib/rag/embedding.service';
 
 @Injectable()
 export class PerformanceCollectorService {
@@ -23,6 +24,7 @@ export class PerformanceCollectorService {
     private readonly kopisCollector: KopisCollector,
     private readonly naverCollector: NaverCollector,
     private readonly kakaoCollector: KakaoCollector,
+    private readonly embeddingService: EmbeddingService,
   ) {}
 
   /**
@@ -109,7 +111,15 @@ export class PerformanceCollectorService {
     const info = await this.kopisCollector.fetchPerformanceDetail(mt20id);
     if (!info) return;
 
-    // 2. KOPIS 데이터를 Performance 형태로 변환
+    const performanceId = info.mt20id?.[0];
+    if (!performanceId) return;
+
+    // 2. DB에 이미 있으면 줄거리 보강(네이버 검색) 호출 스킵 → 없는 경우에만 호출
+    const existing = await this.performanceRepo.findOne({
+      where: { id: performanceId },
+    });
+
+    // 3. KOPIS 데이터를 Performance 형태로 변환
     const baseData = this.kopisCollector.transformKopisDetailToPerformance(
       info,
       genreCode,
@@ -117,29 +127,37 @@ export class PerformanceCollectorService {
     const title = baseData.title;
     const placeName = baseData.place_name;
 
-    // 3. 줄거리 보강 (네이버 검색)
+    // 4. 줄거리 보강 (네이버 검색) — id가 DB에 없을 때만 호출. 임베딩도 신규일 때만 호출
     let description = baseData.description;
     const isDescriptionEmpty = !description || description.length < 5;
+    let embeddingVector: number[] | null = null;
 
     if (isDescriptionEmpty) {
-      this.logger.log(`🔍 [${title}] 줄거리 없음 -> 네이버 통합 검색 시도...`);
-      const searchedDescription = await this.naverCollector.searchDescription(
-        title,
-        baseData.type,
-      );
-
-      if (searchedDescription) {
-        description = searchedDescription;
-        this.logger.log(
-          `[${title}] 줄거리 보강 완료 (${description.length}자)`,
-        );
+      if (existing) {
+        description = existing.description || 'No contents';
       } else {
-        description = 'No contents';
-        this.logger.warn(`[${title}] 줄거리 검색 실패`);
+        this.logger.log(
+          `🔍 [${title}] 줄거리 없음 -> 네이버 통합 검색 시도...`,
+        );
+        const searchedDescription = await this.naverCollector.searchDescription(
+          title,
+          baseData.type,
+        );
+
+        if (searchedDescription) {
+          description = searchedDescription;
+          this.logger.log(
+            `[${title}] 줄거리 보강 완료 (${description.length}자)`,
+          );
+          embeddingVector = await this.embeddingService.embed(description);
+        } else {
+          description = 'No contents';
+          this.logger.warn(`[${title}] 줄거리 검색 실패`);
+        }
       }
     }
 
-    // 4. 좌표 변환 (카카오 로컬 API)
+    // 5. 좌표 변환 (카카오 로컬 API)
     const coordinates = await this.kakaoCollector.getCoordinates(placeName);
 
     const newData = {
@@ -147,12 +165,10 @@ export class PerformanceCollectorService {
       description: description,
       latitude: coordinates?.latitude || undefined,
       longitude: coordinates?.longitude || undefined,
+      embedding: embeddingVector ? `[${embeddingVector.join(',')}]` : undefined,
     };
 
     // --- 👇 기존 데이터 비교 및 저장 로직 ---
-    const existing = await this.performanceRepo.findOne({
-      where: { id: info.mt20id?.[0] },
-    });
 
     if (existing) {
       const hasChanges =
@@ -174,14 +190,16 @@ export class PerformanceCollectorService {
         return;
       }
 
-      await this.performanceRepo.update(info.mt20id[0], {
-        ...newData,
+      const { embedding, ...updateData } = newData;
+      void embedding; // 업데이트 시 기존 embedding 유지 (제외)
+      await this.performanceRepo.update(performanceId, {
+        ...updateData,
         updated_at: new Date(),
       });
       this.logger.log(`♻️ [Update] ${newData.title}`);
     } else {
       const entity = this.performanceRepo.create({
-        id: info.mt20id[0],
+        id: performanceId,
         ...newData,
         updated_at: new Date(),
       });

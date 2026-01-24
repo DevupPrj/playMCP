@@ -50,6 +50,14 @@ export class Performance {
   @Column({ type: 'text', nullable: true })
   ticket_link: string; // 티켓링크
 
+  @Column({
+    type: 'text',
+    nullable: true,
+    comment:
+      'Description embedding vector for RAG search (stored as text, cast to vector in queries)',
+  })
+  embedding?: string; // pgvector: description 임베딩 벡터 (text로 저장, 쿼리에서 vector로 캐스팅)
+
   @UpdateDateColumn()
   updated_at: Date; // 마지막 데이터 업데이트 시각
 }

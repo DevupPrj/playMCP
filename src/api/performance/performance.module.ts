@@ -8,9 +8,10 @@ import { HttpModule } from '@nestjs/axios';
 import { KopisCollector } from './collectors/kopis.collector';
 import { NaverCollector } from './collectors/naver.collector';
 import { KakaoCollector } from './collectors/kakao.collector';
+import { RagModule } from '../../lib/rag/rag.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Performance]), HttpModule],
+  imports: [TypeOrmModule.forFeature([Performance]), HttpModule, RagModule],
   controllers: [PerformancesController],
   providers: [
     PerformanceService,
